@@ -15,7 +15,6 @@ htmlcov/
 tfplan
 crash.log
 crash.*.log
-!terraform/bootstrap/terraform.tfstate
 
 *.auto.tfvars
 override.tf
