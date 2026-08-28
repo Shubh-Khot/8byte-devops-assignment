@@ -1,3 +1,15 @@
+locals {
+  owner = split("/", var.github_repository)[0]
+  repo  = split("/", var.github_repository)[1]
+
+  immutable_subject = "repo:${local.owner}@${var.github_owner_id}/${local.repo}@${var.github_repository_id}:*"
+
+  allowed_subjects = compact([
+    "repo:${var.github_repository}:*",
+    var.github_owner_id != "" && var.github_repository_id != "" ? local.immutable_subject : "",
+  ])
+}
+
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -22,7 +34,7 @@ data "aws_iam_policy_document" "github_assume_role" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:*"]
+      values   = local.allowed_subjects
     }
   }
 }
