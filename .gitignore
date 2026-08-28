@@ -30,9 +30,12 @@ crash.*.log
 override.tf
 override.tf.json
 
-# The lock file IS committed on purpose: it pins provider hashes so CI and a
-# laptop resolve byte-identical providers.
+# The lock file IS committed on purpose for each root module: it pins provider
+# hashes so CI and a laptop resolve byte-identical providers. Child modules do
+# not get one - they are never initialised on their own except by the validate
+# loop, which leaves a lock file behind as a side effect.
 !.terraform.lock.hcl
+terraform/modules/*/.terraform.lock.hcl
 
 # Local overrides and secrets
 .env
