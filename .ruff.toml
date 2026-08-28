@@ -1,0 +1,15 @@
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[lint.per-file-ignores]
+# Tests import inside fixtures on purpose, to control when settings are read.
+"app/tests/*" = ["E402"]
+
+[lint.isort]
+# The app runs with /app as the working directory, so its own modules are
+# imported flat (`import db`). Without this, ruff cannot tell them apart from
+# third-party packages and interleaves them with fastapi and sqlalchemy.
+known-first-party = ["config", "db", "logging_config", "metrics", "models", "schemas"]

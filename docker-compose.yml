@@ -1,0 +1,51 @@
+# Local development stack. Same image that CI builds and ECS runs, so a bug
+# reproduced here is the same bug that shows up in staging.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tasksdb
+      POSTGRES_USER: tasks
+      POSTGRES_PASSWORD: localdev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tasks -d tasksdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      args:
+        BUILD_SHA: local
+    environment:
+      APP_ENV: local
+      DB_HOST: db
+      DB_NAME: tasksdb
+      DB_USER: tasks
+      DB_PASSWORD: localdev
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # postgres_exporter turns Postgres internals into Prometheus metrics.
+  # In AWS this role is played by RDS Enhanced Monitoring + CloudWatch.
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    environment:
+      DATA_SOURCE_NAME: "postgresql://tasks:localdev@db:5432/tasksdb?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
