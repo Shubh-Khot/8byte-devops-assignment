@@ -1,9 +1,3 @@
-# Alert rules.
-#
-# These mirror the CloudWatch alarms in terraform/modules/observability so the
-# local stack and AWS agree on what "unhealthy" means. Where they differ, it
-# is because Prometheus can express things CloudWatch cannot - a real
-# histogram_quantile over the app's own latency buckets, for instance.
 
 groups:
   - name: availability
@@ -18,10 +12,6 @@ groups:
           description: "Prometheus has been unable to scrape {{ $labels.instance }} for over a minute."
 
       - alert: DatabaseUnreachable
-        # Set by the app's own readiness check, so this is the application's
-        # view of the database rather than the database's view of itself.
-        # It catches network partitions and credential problems that a
-        # database-side check would report as perfectly healthy.
         expr: app_database_up == 0
         for: 2m
         labels:
@@ -33,9 +23,6 @@ groups:
   - name: latency-and-errors
     rules:
       - alert: HighErrorRate
-        # A ratio, not a count. 5 errors out of 10 requests is an incident;
-        # 5 out of 500,000 is background noise, and a count-based alert cannot
-        # tell them apart.
         expr: |
           (
             sum(rate(http_requests_total{status=~"5.."}[5m]))
@@ -63,8 +50,6 @@ groups:
           description: "p99 is {{ $value | humanizeDuration }}."
 
       - alert: EndpointLatencyRegression
-        # Per-route, so a single slow endpoint is visible instead of being
-        # averaged away by the fast ones.
         expr: |
           histogram_quantile(
             0.95,
@@ -79,8 +64,6 @@ groups:
   - name: saturation
     rules:
       - alert: RequestsPilingUp
-        # In-flight requests climbing while throughput does not means work is
-        # queueing, which shows up here well before it shows up as latency.
         expr: http_requests_in_flight > 50
         for: 5m
         labels:

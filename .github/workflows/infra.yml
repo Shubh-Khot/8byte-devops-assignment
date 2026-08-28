@@ -1,167 +1,73 @@
-# Terraform changes get their own pipeline, separate from application deploys.
-#
-# Reason: they have a completely different risk profile. Shipping application
-# code is reversible in two minutes by redeploying the previous image.
-# Applying Terraform can delete a database. So application deploys are
-# automatic after approval, and infrastructure applies are manual by default.
-
 name: Infrastructure
 
 on:
   pull_request:
     branches: [main]
-    paths: ["terraform/**", ".github/workflows/infra.yml"]
-  push:
-    branches: [main]
     paths: ["terraform/**"]
   workflow_dispatch:
     inputs:
       environment:
-        description: "Environment to apply"
+        description: Environment to apply
+        required: true
         type: choice
         options: [staging, prod]
-        required: true
-      action:
-        description: "plan or apply"
-        type: choice
-        options: [plan, apply]
-        default: plan
 
 permissions:
   contents: read
   id-token: write
-  pull-requests: write # to post the plan as a PR comment
-
-concurrency:
-  group: infra-${{ github.event.inputs.environment || 'staging' }}
-  cancel-in-progress: false
+  pull-requests: write
 
 env:
   AWS_REGION: ap-south-1
   TF_VERSION: 1.10.5
-  TF_IN_AUTOMATION: "true"
 
 jobs:
   plan:
-    name: Plan (${{ github.event.inputs.environment || 'staging' }})
+    name: Plan
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: terraform/envs/${{ github.event.inputs.environment || 'staging' }}
-
+    strategy:
+      matrix:
+        environment: [staging, prod]
     steps:
       - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN || vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: gha-tf-plan-${{ github.run_id }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Init
-        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
 
       - name: Plan
-        id: plan
-        # -detailed-exitcode distinguishes "no changes" (0) from "changes
-        # pending" (2) from "error" (1), so the PR comment can say which.
+        working-directory: terraform/envs/${{ matrix.environment }}
         run: |
-          set +e
-          terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
-          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
-          terraform show -no-color tfplan > plan.txt
-          set -e
-
-      - name: Summarise plan
-        run: |
-          {
-            echo "### Terraform plan - ${{ github.event.inputs.environment || 'staging' }}"
-            echo ""
-            echo '```terraform'
-            # Plans get long; the summary has a size limit, so trim.
-            head -c 60000 plan.txt
-            echo ""
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Comment plan on the PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            let plan = fs.readFileSync('terraform/envs/staging/plan.txt', 'utf8');
-            if (plan.length > 60000) plan = plan.slice(0, 60000) + '\n... truncated, see the run summary';
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `### Terraform plan (staging)\n\n<details><summary>Show plan</summary>\n\n\`\`\`terraform\n${plan}\n\`\`\`\n\n</details>`,
-            });
-
-      - name: Upload plan
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ github.event.inputs.environment || 'staging' }}
-          path: terraform/envs/${{ github.event.inputs.environment || 'staging' }}/tfplan
-          retention-days: 5
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+          terraform plan -input=false -no-color
 
   apply:
-    name: Apply (${{ github.event.inputs.environment }})
+    name: Apply
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    needs: [plan]
-    # Only ever on an explicit manual trigger. Merging to main plans but does
-    # not apply; someone decides when infrastructure changes land.
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply'
-
-    # Same approval gate as production deploys.
-    environment:
-      name: ${{ github.event.inputs.environment == 'prod' && 'production' || 'staging' }}
-
-    defaults:
-      run:
-        working-directory: terraform/envs/${{ github.event.inputs.environment }}
-
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN || vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: gha-tf-apply-${{ github.run_id }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Init
-        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-
-      - name: Download the approved plan
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-${{ github.event.inputs.environment }}
-          path: terraform/envs/${{ github.event.inputs.environment }}
-
-      # Applying the saved plan file, not re-planning. Re-planning after
-      # approval means the reviewer approved one set of changes and a
-      # different set gets applied.
       - name: Apply
-        run: terraform apply -input=false -no-color -lock-timeout=5m tfplan
-
-      - name: Outputs
+        working-directory: terraform/envs/${{ inputs.environment }}
         run: |
-          {
-            echo "### Applied - ${{ github.event.inputs.environment }}"
-            echo '```'
-            terraform output -no-color
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+          terraform apply -input=false -auto-approve

@@ -1,17 +1,13 @@
-# Routing is the interesting part, not the delivery. Two rules matter:
-# group related alerts so one bad deploy sends one message rather than nine,
-# and inhibit the noise a known-critical alert makes downstream.
 
 global:
   resolve_timeout: 5m
 
 route:
   receiver: slack
-  # Alerts about the same service are batched into one notification.
   group_by: ["alertname", "service"]
-  group_wait: 30s       # brief pause so simultaneous alerts arrive together
-  group_interval: 5m    # how often a group may send an update
-  repeat_interval: 4h   # how often an unresolved alert nags again
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
 
   routes:
     - matchers: ['severity="critical"']
@@ -20,8 +16,6 @@ route:
       repeat_interval: 1h
 
 inhibit_rules:
-  # If the service is down, its latency and error alerts are consequences, not
-  # separate problems. Suppress them so the page says one thing.
   - source_matchers: ['alertname="ServiceDown"']
     target_matchers: ['severity=~"warning|critical"']
     equal: ["service"]
@@ -29,15 +23,6 @@ inhibit_rules:
 receivers:
   - name: slack
     slack_configs:
-      # api_url_file, not api_url. Alertmanager does NOT expand environment
-      # variables in its config, so "${SLACK_WEBHOOK_URL}" is read literally
-      # and rejected as a URL with no scheme. Reading the value from a file is
-      # also the better pattern: the secret is mounted at runtime instead of
-      # being baked into a config file that lives in git.
-      #
-      # The committed file holds an obvious placeholder. In a real deployment
-      # it would be mounted from a secret store - the same role Secrets
-      # Manager plays for the database password in AWS.
       - api_url_file: /etc/alertmanager/slack_url
         channel: "#alerts"
         send_resolved: true

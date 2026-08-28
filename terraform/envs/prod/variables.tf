@@ -1,13 +1,12 @@
 variable "project" {
-  description = "Project slug, first component of every resource name."
+  description = "Project name, used as the prefix for every resource."
   type        = string
   default     = "taskapi"
 }
 
 variable "environment" {
-  description = "Environment name. Also becomes APP_ENV inside the container."
+  description = "Environment name, staging or prod."
   type        = string
-  default     = "prod"
 }
 
 variable "region" {
@@ -16,91 +15,109 @@ variable "region" {
   default     = "ap-south-1"
 }
 
+variable "availability_zones" {
+  description = "Availability zones for the subnets. Set explicitly so no describe call is needed at plan time."
+  type        = list(string)
+  default     = ["ap-south-1a", "ap-south-1b"]
+}
+
 variable "vpc_cidr" {
-  description = "VPC CIDR. Kept distinct from prod so the two can be peered later without renumbering."
+  description = "CIDR block for the VPC."
   type        = string
-  default     = "10.30.0.0/16"
 }
 
-variable "service_name" {
-  description = "Service name, also the ECR repository name."
-  type        = string
-  default     = "task-api"
-}
-
-variable "app_port" {
-  description = "Container port."
+variable "container_port" {
+  description = "Port the application listens on."
   type        = number
   default     = 8000
 }
 
 variable "image_tag" {
-  description = <<-EOT
-    Image tag to run. CI passes the git SHA via -var on each deploy; the
-    default only exists so the very first apply has something to reference.
-  EOT
+  description = "Image tag to deploy. The pipeline overwrites this on every release."
   type        = string
-  default     = "bootstrap"
+  default     = "latest"
+}
+
+variable "cpu" {
+  description = "Fargate CPU units per task."
+  type        = number
+  default     = 256
+}
+
+variable "memory" {
+  description = "Fargate memory in MB per task."
+  type        = number
+  default     = 512
+}
+
+variable "desired_count" {
+  description = "Number of tasks to run."
+  type        = number
+  default     = 1
 }
 
 variable "db_instance_class" {
   description = "RDS instance class."
   type        = string
-  default     = "db.t4g.small"
+  default     = "db.t4g.micro"
 }
 
-variable "db_username" {
-  description = "Master username. The password is generated and stored in Secrets Manager."
+variable "db_allocated_storage" {
+  description = "RDS storage in GB."
+  type        = number
+  default     = 20
+}
+
+variable "db_multi_az" {
+  description = "Run an RDS standby in a second availability zone."
+  type        = bool
+  default     = false
+}
+
+variable "db_backup_retention_days" {
+  description = "Days of automated RDS backups to keep."
+  type        = number
+  default     = 7
+}
+
+variable "db_skip_final_snapshot" {
+  description = "Skip the final snapshot when the database is destroyed."
+  type        = bool
+  default     = true
+}
+
+variable "deletion_protection" {
+  description = "Protect the database and load balancer from deletion."
+  type        = bool
+  default     = false
+}
+
+variable "container_insights" {
+  description = "Enable ECS Container Insights."
+  type        = bool
+  default     = false
+}
+
+variable "log_level" {
+  description = "Application log level."
   type        = string
-  default     = "taskapp"
+  default     = "INFO"
 }
 
-variable "alb_ingress_cidrs" {
-  description = "Who can reach the load balancer. Narrow this to your office/VPN range if staging holds real data."
-  type        = list(string)
-  default     = ["0.0.0.0/0"]
+variable "log_retention_days" {
+  description = "CloudWatch log retention in days."
+  type        = number
+  default     = 14
 }
 
 variable "alert_emails" {
-  description = "Addresses subscribed to CloudWatch alarms."
+  description = "Addresses subscribed to the alert topic."
   type        = list(string)
   default     = []
 }
 
-variable "slack_webhook_url" {
-  description = "Slack incoming webhook for alarms. Passed via TF_VAR_slack_webhook_url, never committed."
-  type        = string
-  default     = null
-  sensitive   = true
-}
-
-variable "certificate_arn" {
-  description = <<-EOT
-    ACM certificate for the HTTPS listener. Production should not run without
-    one; it is nullable only so the stack can be applied before DNS exists.
-  EOT
-  type        = string
-  default     = null
-}
-
-variable "access_logs_bucket" {
-  description = "S3 bucket for ALB access logs. Needs a bucket policy allowing the ELB service principal."
-  type        = string
-  default     = null
-}
-
-variable "availability_zones" {
-  description = <<-EOT
-    Explicit AZ names. Leave empty to discover them automatically, which is
-    the better default. Set them when the account's SCP denies
-    ec2:DescribeAvailabilityZones, or when you need to pin to specific zones
-    because a subnet was created there by hand.
-  EOT
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition     = length(var.availability_zones) == 0 || length(var.availability_zones) >= 2
-    error_message = "Specify at least two AZs, or none at all to auto-discover."
-  }
+variable "error_threshold" {
+  description = "5xx responses per minute before the error alarm fires."
+  type        = number
+  default     = 5
 }

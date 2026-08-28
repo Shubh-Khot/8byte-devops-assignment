@@ -26,8 +26,6 @@ def test_formatter_emits_parseable_json():
 
 
 def test_extra_fields_are_promoted_to_top_level_keys():
-    # Loki/CloudWatch queries filter on these directly, so they must not end
-    # up nested or stringified.
     out = json.loads(JsonFormatter().format(_record(request_id="abc123", status=200)))
     assert out["request_id"] == "abc123"
     assert out["status"] == 200

@@ -23,14 +23,11 @@ class FakeRoute:
 
 
 def test_route_template_uses_the_matched_pattern_not_the_raw_path():
-    # This is the whole point of the helper: /tasks/1 and /tasks/2 must
-    # collapse into one metric series.
     req = _request({"route": FakeRoute("/tasks/{task_id}")})
     assert route_template(req) == "/tasks/{task_id}"
 
 
 def test_route_template_collapses_unmatched_paths():
-    # Scanner traffic hitting random URLs must not create unbounded labels.
     assert route_template(_request()) == "unmatched"
 
 

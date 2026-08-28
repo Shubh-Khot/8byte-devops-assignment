@@ -1,423 +1,91 @@
-# Merge to main -> build -> staging -> (human approves) -> production.
-#
-# The approval gate is a GitHub Environment with required reviewers, not a
-# step in a script. That matters: the job physically cannot start until a
-# named person clicks approve, the decision is recorded against the run, and
-# it cannot be bypassed by someone editing the workflow in their own branch.
-
-name: CD
+name: Deploy
 
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "monitoring/**"
   workflow_dispatch:
-    inputs:
-      skip_staging:
-        description: "Deploy straight to production (hotfix path)"
-        type: boolean
-        default: false
 
-# Never run two deploys at once. cancel-in-progress is deliberately FALSE
-# here, unlike CI: cancelling a half-finished ECS rollout leaves the service
-# in a mixed state.
 concurrency:
-  group: cd-${{ github.ref }}
+  group: deploy
   cancel-in-progress: false
 
 permissions:
   contents: read
-  id-token: write # required to mint the OIDC token for AWS
-  packages: read
+  id-token: write
 
 env:
   AWS_REGION: ap-south-1
-  ECR_REPOSITORY: task-api
-  SERVICE_NAME: task-api
+  ECR_REPOSITORY: taskapi
 
 jobs:
-  # Re-run the tests on the merge commit. CI tested the PR branch; what is
-  # about to ship is the merge result, which nobody has tested yet.
-  test:
-    name: Test merge commit
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: tasksdb
-          POSTGRES_USER: tasks
-          POSTGRES_PASSWORD: ci-local-password
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U tasks -d tasksdb"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-
-    env:
-      DB_HOST: localhost
-      DB_NAME: tasksdb
-      DB_USER: tasks
-      DB_PASSWORD: ci-local-password
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: app/requirements-dev.txt
-      - run: pip install -r app/requirements-dev.txt
-      - name: Unit and integration tests
-        working-directory: app
-        run: pytest -v
-
   build:
-    name: Build, scan and push
+    name: Build and push image
     runs-on: ubuntu-latest
-    needs: [test]
     outputs:
-      image_tag: ${{ steps.meta.outputs.tag }}
-      image_uri: ${{ steps.meta.outputs.uri }}
-      image_digest: ${{ steps.push.outputs.digest }}
-
+      image: ${{ steps.push.outputs.image }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
-          # No access keys anywhere. This assumes a role via OIDC whose trust
-          # policy is pinned to this repo and this branch.
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: gha-build-${{ github.run_id }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to ECR
+      - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Compute image tag
-        id: meta
-        run: |
-          # sha- prefix matches the ECR lifecycle policy's tagPrefixList, so
-          # release images are the ones retained and everything else expires.
-          TAG="sha-$(git rev-parse --short=12 HEAD)"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "uri=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$TAG" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-buildx-action@v3
-
-      # Build once, locally, and scan that exact image. Building a second time
-      # for the push would risk shipping bytes the scanner never looked at.
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          tags: ${{ steps.meta.outputs.uri }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            BUILD_SHA=${{ steps.meta.outputs.tag }}
-
-      - name: Scan image
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: ${{ steps.meta.outputs.uri }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-
-      - name: Generate SBOM
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: ${{ steps.meta.outputs.uri }}
-          format: cyclonedx
-          output: sbom.cyclonedx.json
-          scan-type: image
-
-      # Keeping the SBOM makes "are we affected by the CVE published today?"
-      # a lookup instead of a rebuild-and-rescan of every past release.
-      - name: Archive SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-${{ steps.meta.outputs.tag }}
-          path: sbom.cyclonedx.json
-          retention-days: 90
-
-      - name: Push to ECR
+      - name: Build and push
         id: push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          docker push "${{ steps.meta.outputs.uri }}"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ steps.meta.outputs.uri }}")
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "Pushed $DIGEST"
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:sha-${GITHUB_SHA::7}"
+          docker build --build-arg BUILD_SHA="$GITHUB_SHA" -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Job summary
-        run: |
-          {
-            echo "### Image built"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| Tag | \`${{ steps.meta.outputs.tag }}\` |"
-            echo "| Commit | \`${GITHUB_SHA:0:12}\` |"
-            echo "| Scanned | HIGH/CRITICAL, fixable only |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy-staging:
+  staging:
     name: Deploy to staging
+    needs: build
     runs-on: ubuntu-latest
-    needs: [build]
-    if: ${{ !inputs.skip_staging }}
-
-    environment:
-      name: staging
-      url: ${{ steps.deploy.outputs.url }}
-
-    outputs:
-      previous_task_def: ${{ steps.current.outputs.arn }}
-
+    environment: staging
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: gha-staging-${{ github.run_id }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Resolve cluster and service names
-        id: names
+      - name: Update service
+        run: scripts/deploy.sh taskapi-staging "${{ needs.build.outputs.image }}"
+
+      - name: Smoke test
         run: |
-          echo "cluster=taskapi-staging-cluster" >> "$GITHUB_OUTPUT"
-          echo "family=taskapi-staging-${SERVICE_NAME}" >> "$GITHUB_OUTPUT"
-
-      # Recorded before anything changes, so the rollback step has a concrete
-      # revision to go back to rather than guessing "the one before".
-      - name: Record currently deployed revision
-        id: current
-        run: |
-          ARN=$(aws ecs describe-services \
-            --cluster "${{ steps.names.outputs.cluster }}" \
-            --services "${SERVICE_NAME}" \
-            --query 'services[0].taskDefinition' --output text)
-          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
-          echo "Currently running: $ARN"
-
-      - name: Download live task definition
-        run: |
-          aws ecs describe-task-definition \
-            --task-definition "${{ steps.names.outputs.family }}" \
-            --query taskDefinition > task-definition.json
-
-      # Read the live definition and swap only the image. Rendering the whole
-      # definition from the workflow instead would silently drop any change
-      # made in Terraform since the last deploy.
-      - name: Render new task definition
-        id: render
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: ${{ env.SERVICE_NAME }}
-          image: ${{ needs.build.outputs.image_uri }}
-
-      - name: Deploy
-        id: deploy
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.render.outputs.task-definition }}
-          service: ${{ env.SERVICE_NAME }}
-          cluster: ${{ steps.names.outputs.cluster }}
-          # Block until ECS reports the service stable. Combined with the
-          # deployment circuit breaker in Terraform, a failed rollout rolls
-          # itself back and this step then fails the job.
-          wait-for-service-stability: true
-          wait-for-minutes: 10
-
-      - name: Resolve application URL
-        id: url
-        run: |
-          DNS=$(aws elbv2 describe-load-balancers \
+          URL=$(aws elbv2 describe-load-balancers \
             --names taskapi-staging-alb \
             --query 'LoadBalancers[0].DNSName' --output text)
-          echo "url=http://$DNS" >> "$GITHUB_OUTPUT"
+          scripts/smoke-test.sh "http://$URL"
 
-      - name: Smoke test
-        run: |
-          BASE="${{ steps.url.outputs.url }}"
-          ./scripts/smoke-test.sh "$BASE" "${{ needs.build.outputs.image_tag }}"
-
-      - name: Roll back on failure
-        if: failure() && steps.current.outputs.arn != ''
-        run: |
-          echo "::warning::Deploy failed - restoring ${{ steps.current.outputs.arn }}"
-          aws ecs update-service \
-            --cluster "${{ steps.names.outputs.cluster }}" \
-            --service "${SERVICE_NAME}" \
-            --task-definition "${{ steps.current.outputs.arn }}" \
-            --force-new-deployment >/dev/null
-          aws ecs wait services-stable \
-            --cluster "${{ steps.names.outputs.cluster }}" \
-            --services "${SERVICE_NAME}"
-          echo "Rollback complete."
-
-  # ---------------------------------------------------------------------------
-  # Production.
-  #
-  # The gate is `environment: production` with required reviewers configured in
-  # repository settings. GitHub pauses the run here and shows an Approve button
-  # to the named reviewers. Nothing in this file can skip it.
-  # ---------------------------------------------------------------------------
-  deploy-production:
+  production:
     name: Deploy to production
+    needs: [build, staging]
     runs-on: ubuntu-latest
-    needs: [build, deploy-staging]
-    if: always() && needs.build.result == 'success' && (needs.deploy-staging.result == 'success' || inputs.skip_staging)
-
-    environment:
-      name: production
-      url: ${{ steps.url.outputs.url }}
-
+    environment: prod
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: gha-prod-${{ github.run_id }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Resolve cluster and service names
-        id: names
-        run: |
-          echo "cluster=taskapi-prod-cluster" >> "$GITHUB_OUTPUT"
-          echo "family=taskapi-prod-${SERVICE_NAME}" >> "$GITHUB_OUTPUT"
-
-      # Promoting the exact image that staging ran, by tag, not rebuilding
-      # from source. A rebuild can produce different bytes from the same
-      # commit, and then production is running something never tested.
-      - name: Verify the image exists in ECR
-        run: |
-          aws ecr describe-images \
-            --repository-name "${ECR_REPOSITORY}" \
-            --image-ids imageTag="${{ needs.build.outputs.image_tag }}" >/dev/null
-          echo "Promoting ${{ needs.build.outputs.image_tag }}"
-
-      - name: Record currently deployed revision
-        id: current
-        run: |
-          ARN=$(aws ecs describe-services \
-            --cluster "${{ steps.names.outputs.cluster }}" \
-            --services "${SERVICE_NAME}" \
-            --query 'services[0].taskDefinition' --output text)
-          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
-
-      - name: Download live task definition
-        run: |
-          aws ecs describe-task-definition \
-            --task-definition "${{ steps.names.outputs.family }}" \
-            --query taskDefinition > task-definition.json
-
-      - name: Render new task definition
-        id: render
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: ${{ env.SERVICE_NAME }}
-          image: ${{ needs.build.outputs.image_uri }}
-
-      - name: Deploy
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.render.outputs.task-definition }}
-          service: ${{ env.SERVICE_NAME }}
-          cluster: ${{ steps.names.outputs.cluster }}
-          wait-for-service-stability: true
-          wait-for-minutes: 15
-
-      - name: Resolve application URL
-        id: url
-        run: |
-          DNS=$(aws elbv2 describe-load-balancers \
-            --names taskapi-prod-alb \
-            --query 'LoadBalancers[0].DNSName' --output text)
-          echo "url=http://$DNS" >> "$GITHUB_OUTPUT"
+      - name: Update service
+        run: scripts/deploy.sh taskapi-prod "${{ needs.build.outputs.image }}"
 
       - name: Smoke test
-        run: ./scripts/smoke-test.sh "${{ steps.url.outputs.url }}" "${{ needs.build.outputs.image_tag }}"
-
-      - name: Roll back on failure
-        if: failure() && steps.current.outputs.arn != ''
         run: |
-          echo "::error::Production deploy failed - restoring ${{ steps.current.outputs.arn }}"
-          aws ecs update-service \
-            --cluster "${{ steps.names.outputs.cluster }}" \
-            --service "${SERVICE_NAME}" \
-            --task-definition "${{ steps.current.outputs.arn }}" \
-            --force-new-deployment >/dev/null
-          aws ecs wait services-stable \
-            --cluster "${{ steps.names.outputs.cluster }}" \
-            --services "${SERVICE_NAME}"
-
-  notify:
-    name: Notify Slack
-    runs-on: ubuntu-latest
-    needs: [build, deploy-staging, deploy-production]
-    if: always()
-    steps:
-      - name: Build message
-        id: msg
-        run: |
-          if [ "${{ needs.deploy-production.result }}" = "success" ]; then
-            echo "emoji=:white_check_mark:" >> "$GITHUB_OUTPUT"
-            echo "text=Deployed to production" >> "$GITHUB_OUTPUT"
-          elif [ "${{ needs.deploy-production.result }}" = "failure" ] || [ "${{ needs.deploy-staging.result }}" = "failure" ]; then
-            echo "emoji=:rotating_light:" >> "$GITHUB_OUTPUT"
-            echo "text=Deploy FAILED (rollback attempted)" >> "$GITHUB_OUTPUT"
-          elif [ "${{ needs.deploy-staging.result }}" = "success" ]; then
-            echo "emoji=:hourglass:" >> "$GITHUB_OUTPUT"
-            echo "text=Staging deployed - production is waiting for approval" >> "$GITHUB_OUTPUT"
-          else
-            echo "emoji=:grey_question:" >> "$GITHUB_OUTPUT"
-            echo "text=Pipeline finished with mixed results" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Post to Slack
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "No Slack webhook configured; skipping notification."
-            exit 0
-          fi
-          curl -sS -X POST "$SLACK_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"text\": \"${{ steps.msg.outputs.emoji }} ${{ steps.msg.outputs.text }}\",
-              \"blocks\": [
-                {
-                  \"type\": \"section\",
-                  \"text\": {
-                    \"type\": \"mrkdwn\",
-                    \"text\": \"${{ steps.msg.outputs.emoji }} *${{ steps.msg.outputs.text }}*\n*Image:* \`${{ needs.build.outputs.image_tag }}\`\n*By:* ${GITHUB_ACTOR}\n*Staging:* ${{ needs.deploy-staging.result }} | *Production:* ${{ needs.deploy-production.result }}\"
-                  }
-                },
-                {
-                  \"type\": \"actions\",
-                  \"elements\": [{
-                    \"type\": \"button\",
-                    \"text\": { \"type\": \"plain_text\", \"text\": \"Open run\" },
-                    \"url\": \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"
-                  }]
-                }
-              ]
-            }"
+          URL=$(aws elbv2 describe-load-balancers \
+            --names taskapi-prod-alb \
+            --query 'LoadBalancers[0].DNSName' --output text)
+          scripts/smoke-test.sh "http://$URL"

@@ -1,25 +1,3 @@
-# The observability stack, kept in its own compose file.
-#
-#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
-#
-# This file lives at the repo root, not in monitoring/, and that is not an
-# accident. Compose resolves relative bind-mount paths against the PROJECT
-# directory - the directory of the first -f file - not against the file the
-# path is written in. With this file under monitoring/, every `./prometheus/...`
-# mount silently resolved to a non-existent path at the repo root, and Docker
-# helpfully created empty directories there and mounted those. Every config
-# file appeared to vanish. Keeping the file at the root makes the paths mean
-# what they look like they mean.
-#
-# Separate from the application compose file on purpose: `docker compose up`
-# should give a developer a working API in fifteen seconds without also
-# starting six monitoring containers they do not need.
-#
-# What this mirrors in AWS:
-#   Prometheus + exporters -> CloudWatch metrics + Container Insights
-#   Loki + Promtail        -> CloudWatch Logs (via the awslogs driver)
-#   Grafana                -> CloudWatch dashboards (terraform/modules/observability)
-#   Alertmanager           -> CloudWatch alarms + SNS
 
 services:
   prometheus:
@@ -28,8 +6,6 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=7d
-      # Needed for the "reload config without restarting" workflow, which is
-      # how you iterate on alert rules without losing the metric history.
       - --web.enable-lifecycle
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -45,8 +21,6 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
-      # Skips the login page for a local demo. Never do this on anything
-      # reachable from outside a laptop.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_LOG_LEVEL: warn
@@ -74,8 +48,6 @@ services:
     command: -config.file=/etc/promtail/promtail-config.yml
     volumes:
       - ./monitoring/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
-      # Read-only socket access. Promtail only needs to list containers and
-      # read their logs; it must never be able to start or stop anything.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
     depends_on: [loki]
@@ -87,12 +59,6 @@ services:
       - --path.rootfs=/host
       - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
     volumes:
-      # No `rslave` here. It is the documented option on Linux, but Docker
-      # Desktop on macOS runs containers inside a VM whose root is not a
-      # shared mount, and the daemon refuses the bind outright. Plain :ro
-      # works on both; on macOS the numbers describe the VM rather than the
-      # host, which is fine - the point of this panel is that the pipeline
-      # works, and in AWS these metrics come from Container Insights anyway.
       - /:/host:ro
     ports:
       - "9100:9100"
@@ -101,8 +67,6 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     command:
-      # cAdvisor collects far more than is needed here; disabling the unused
-      # collectors cuts its own CPU use noticeably.
       - --docker_only=true
       - --housekeeping_interval=10s
       - --disable_metrics=disk,tcp,udp,percpu,sched,process,hugetlb,referenced_memory,cpu_topology,resctrl
@@ -122,8 +86,6 @@ services:
       - --config.file=/etc/alertmanager/alertmanager.yml
     volumes:
       - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      # Holds the Slack webhook. Placeholder in git; replace the contents
-      # locally, or mount a real secret here in a deployed setup.
       - ./monitoring/alertmanager/slack_url:/etc/alertmanager/slack_url:ro
     ports:
       - "9093:9093"

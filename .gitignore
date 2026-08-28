@@ -1,4 +1,3 @@
-# Python
 __pycache__/
 *.py[cod]
 .venv/
@@ -9,11 +8,6 @@ venv/
 coverage.xml
 htmlcov/
 
-# Terraform
-#
-# .terraform/ holds downloaded providers - large, and rebuilt by `init`.
-# *.tfstate is ignored because state lives in S3; the one exception is the
-# bootstrap root, which has to keep local state (see terraform/bootstrap/README.md).
 **/.terraform/*
 *.tfstate
 *.tfstate.*
@@ -23,28 +17,19 @@ crash.log
 crash.*.log
 !terraform/bootstrap/terraform.tfstate
 
-# .tfvars files are NOT ignored here - the committed ones hold only
-# environment sizing, no secrets. Anything sensitive is passed via TF_VAR_
-# environment variables or read from Secrets Manager.
 *.auto.tfvars
 override.tf
 override.tf.json
 
-# The lock file IS committed on purpose for each root module: it pins provider
-# hashes so CI and a laptop resolve byte-identical providers. Child modules do
-# not get one - they are never initialised on their own except by the validate
-# loop, which leaves a lock file behind as a side effect.
 !.terraform.lock.hcl
 terraform/modules/*/.terraform.lock.hcl
 
-# Local overrides and secrets
 .env
 .env.local
 *.pem
 *.key
 monitoring/alertmanager/slack_url.local
 
-# OS / editor
 .DS_Store
 .idea/
 .vscode/

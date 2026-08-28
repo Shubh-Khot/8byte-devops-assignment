@@ -1,18 +1,14 @@
-# Production values. Committed; contains nothing secret.
-
-project     = "taskapi"
 environment = "prod"
-region      = "ap-south-1"
+vpc_cidr    = "10.30.0.0/16"
 
-vpc_cidr = "10.30.0.0/16"
+db_instance_class        = "db.t4g.small"
+db_multi_az              = true
+db_backup_retention_days = 14
+db_skip_final_snapshot   = false
 
-db_instance_class = "db.t4g.small"
-
-# Graviton (t4g) is ~10% cheaper than t3 for the same class and performs
-# better on Postgres. The only reason staging is not on it is that free tier
-# covers db.t3.micro.
+desired_count       = 2
+deletion_protection = true
+container_insights  = true
+log_retention_days  = 30
 
 alert_emails = []
-
-# certificate_arn    = "arn:aws:acm:ap-south-1:<account>:certificate/<id>"
-# access_logs_bucket = "taskapi-prod-alb-logs"

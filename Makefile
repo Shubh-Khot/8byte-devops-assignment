@@ -1,6 +1,3 @@
-# Shortcuts for the things I run constantly. Everything here is a thin wrapper
-# over the real command, so nothing is hidden - `make -n <target>` shows you
-# exactly what will run.
 
 COMPOSE      := docker compose
 COMPOSE_ALL  := docker compose -f docker-compose.yml -f docker-compose.monitoring.yml
@@ -13,8 +10,6 @@ TF_ENV       ?= staging
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
-
-# --- local development ------------------------------------------------------
 
 .PHONY: up
 up: ## Start the app and Postgres
@@ -33,8 +28,6 @@ clean: ## Stop everything and delete volumes
 logs: ## Tail application logs
 	$(COMPOSE) logs -f api
 
-# --- observability ----------------------------------------------------------
-
 .PHONY: monitoring
 monitoring: ## Start the app plus Prometheus, Loki, Grafana, exporters
 	$(COMPOSE_ALL) up -d --build
@@ -51,11 +44,6 @@ load: ## Generate 60s of demo traffic
 .PHONY: load-errors
 load-errors: ## Generate traffic including 5xx, to trip the error-rate alert
 	./scripts/generate-load.sh 120 errors
-
-# --- quality gates ----------------------------------------------------------
-#
-# These run in a container rather than against the host interpreter so they
-# behave identically here and in CI, whatever Python happens to be installed.
 
 .PHONY: test
 test: ## Run the full test suite against the compose Postgres
@@ -92,8 +80,6 @@ audit: ## Scan dependencies and the image for known vulnerabilities
 .PHONY: smoke
 smoke: ## Run the smoke test against the local stack
 	./scripts/smoke-test.sh http://localhost:8000
-
-# --- infrastructure ---------------------------------------------------------
 
 .PHONY: tf-validate
 tf-validate: ## fmt-check and validate every Terraform root and module

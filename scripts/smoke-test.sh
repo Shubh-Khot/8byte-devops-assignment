@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-#
-# Post-deploy smoke test. Fails the pipeline if the freshly deployed service
-# is not actually serving.
-#
-#   ./scripts/smoke-test.sh http://alb-dns-name [expected-build-sha]
-#
-# The build SHA check is the part that matters most. Without it a deploy that
-# silently rolled back still "passes", because the old version answers /readyz
-# perfectly well.
 
 set -euo pipefail
 
@@ -21,12 +12,6 @@ ok()   { echo "  ok: $*"; }
 
 echo "Smoke testing ${BASE_URL}"
 
-# ---------------------------------------------------------------------------
-# 1. Wait for readiness.
-#
-# Retried rather than checked once: the ALB needs a moment to register the new
-# targets even after ECS reports the service stable.
-# ---------------------------------------------------------------------------
 echo "[1/5] waiting for /readyz"
 for attempt in $(seq 1 "$RETRIES"); do
   code=$(curl -fsS -o /tmp/readyz.json -w '%{http_code}' --max-time 10 "${BASE_URL}/readyz" 2>/dev/null || echo "000")
@@ -42,9 +27,6 @@ done
 grep -q '"database":"ok"' /tmp/readyz.json || fail "readiness reports the database is unreachable"
 ok "database reachable"
 
-# ---------------------------------------------------------------------------
-# 2. Confirm the running build is the one we just deployed.
-# ---------------------------------------------------------------------------
 echo "[2/5] verifying deployed build"
 if [ -n "$EXPECTED_BUILD" ]; then
   live=$(curl -fsS --max-time 10 "${BASE_URL}/healthz" | sed -n 's/.*"build":"\([^"]*\)".*/\1/p')
@@ -54,10 +36,6 @@ else
   echo "  skipped: no expected build passed"
 fi
 
-# ---------------------------------------------------------------------------
-# 3. Exercise a real write path, not just a health endpoint. A service can
-#    pass /readyz with a read-only or out-of-disk database.
-# ---------------------------------------------------------------------------
 echo "[3/5] create a task"
 created=$(curl -fsS --max-time 10 -X POST "${BASE_URL}/tasks" \
   -H 'Content-Type: application/json' \
@@ -71,9 +49,6 @@ curl -fsS --max-time 10 "${BASE_URL}/tasks/${task_id}" >/dev/null || fail "creat
 curl -fsS --max-time 10 -X DELETE "${BASE_URL}/tasks/${task_id}" >/dev/null || fail "could not delete the test task"
 ok "round-trip complete, test data removed"
 
-# ---------------------------------------------------------------------------
-# 5. Metrics endpoint, because the dashboards are useless without it.
-# ---------------------------------------------------------------------------
 echo "[5/5] metrics endpoint"
 curl -fsS --max-time 10 "${BASE_URL}/metrics" | grep -q "http_requests_total" \
   || fail "/metrics is not exposing http_requests_total"

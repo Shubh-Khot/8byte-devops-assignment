@@ -40,8 +40,6 @@ def test_failed_check_sets_the_gauge_down(check, monkeypatch):
 
 
 def test_check_does_not_propagate_database_errors(check, monkeypatch):
-    # The caller is a background task and an HTTP handler; neither should have
-    # to catch anything. A raise here would kill the readiness loop outright.
     def boom():
         raise RuntimeError("some driver-level explosion")
 
@@ -57,8 +55,6 @@ def test_gauge_recovers_without_a_request(check, monkeypatch):
     check()
     assert _gauge() == 0
 
-    # The database comes back. The background loop calls check_database again;
-    # no HTTP request is involved, and the gauge must follow.
     monkeypatch.setattr(db, "ping", lambda: None)
     check()
     assert _gauge() == 1

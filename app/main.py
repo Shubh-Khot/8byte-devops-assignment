@@ -1,9 +1,4 @@
-"""Task API - a small CRUD service used as the payload for the platform work.
-
-The application logic is deliberately boring. What matters here is that it
-behaves like something you can actually operate: structured logs, Prometheus
-metrics, and health endpoints that mean different things.
-"""
+"""Task API: a small CRUD service with health endpoints, metrics and JSON logs."""
 
 import asyncio
 import logging
@@ -29,23 +24,14 @@ from schemas import TaskCreate, TaskOut, TaskUpdate
 configure_logging(settings.log_level)
 log = logging.getLogger("app")
 
-# Set by the CI pipeline at build time so a running container can tell you
-# exactly which commit it came from. Saves a lot of "which version is live?".
 BUILD_SHA = os.getenv("BUILD_SHA", "dev")
 INSTANCE = socket.gethostname()
 
-
-# How often the background probe re-checks the database. Matches the ALB
-# health check interval so the metric never goes stale between polls.
 READINESS_INTERVAL_SECONDS = 15
 
 
 def check_database() -> bool:
-    """Probe the database and record the result on the gauge.
-
-    Both /readyz and the background task go through here so there is exactly
-    one place that decides what "the database is up" means.
-    """
+    """Probe the database and record the result on the gauge."""
     try:
         db.ping()
     except Exception as exc:
@@ -59,17 +45,12 @@ def check_database() -> bool:
 async def readiness_loop() -> None:
     """Refresh the database gauge on a timer, independent of traffic.
 
-    Without this the gauge only moves when something calls /readyz, so a quiet
-    service reports app_database_up = 0 - its startup default - and the
-    DatabaseUnreachable alert fires against a perfectly healthy database.
-    In AWS the ALB polls /readyz every 15s and hides the problem; anywhere
-    without a health checker in front of it, the metric is simply wrong.
+    Without this the gauge only moves when something calls /readyz, so an idle
+    service reports app_database_up = 0 and the alert fires against a healthy
+    database.
     """
     while True:
         try:
-            # The probe is blocking (psycopg is synchronous), so it runs in a
-            # worker thread rather than stalling the event loop for the
-            # duration of the connect timeout.
             await asyncio.to_thread(check_database)
         except Exception:
             log.exception("readiness loop iteration failed")
@@ -79,9 +60,6 @@ async def readiness_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     log.info("starting", extra={"env": settings.env, "build": BUILD_SHA})
-    # Retry briefly: on a fresh `docker compose up` the app usually wins the
-    # race against Postgres, and crash-looping over a 3 second startup delay
-    # is a waste of everyone's time.
     for attempt in range(1, 11):
         try:
             db.init_schema()
@@ -92,7 +70,7 @@ async def lifespan(_: FastAPI):
     else:
         raise RuntimeError("database unreachable after 10 attempts")
 
-    check_database()  # publish a real value before the first scrape can happen
+    check_database()
     probe = asyncio.create_task(readiness_loop())
 
     yield
@@ -113,19 +91,12 @@ def get_session():
         session.close()
 
 
-# Annotated alias rather than `session: Session = Depends(get_session)` in
-# every signature. Same behaviour, but the dependency is declared once, and it
-# keeps a mutable default out of the function signature.
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
 @app.middleware("http")
 async def access_log(request: Request, call_next):
-    """One structured line per request, carrying a correlation id.
-
-    The id is taken from X-Request-Id if a proxy already set one, so a trace
-    survives across the ALB and any future services behind it.
-    """
+    """One structured log line per request, with a correlation id."""
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
     request.state.request_id = request_id
 
@@ -147,8 +118,6 @@ async def access_log(request: Request, call_next):
     duration_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["X-Request-Id"] = request_id
 
-    # Health checks fire every few seconds from the ALB and from ECS. Logging
-    # them at INFO buries everything else and costs real money in CloudWatch.
     level = logging.DEBUG if request.url.path in ("/healthz", "/readyz") else logging.INFO
     log.log(
         level,
@@ -169,18 +138,13 @@ async def access_log(request: Request, call_next):
 
 @app.get("/healthz")
 def healthz():
-    """Liveness. Process-level only, never touches the database.
-
-    If this checked the DB, a brief database outage would restart every task
-    at once and turn a recoverable blip into a cold start for the whole fleet.
-    """
+    """Liveness. Never touches the database, or an outage would restart every task."""
     return {"status": "alive", "build": BUILD_SHA, "instance": INSTANCE}
 
 
 @app.get("/readyz")
 def readyz(response: Response):
-    """Readiness. Returns 503 when the database is unreachable, which takes
-    this task out of the ALB target group without killing it."""
+    """Readiness. A 503 takes this task out of the target group without killing it."""
     if not check_database():
         response.status_code = 503
         return {"status": "degraded", "database": "unreachable"}
@@ -237,10 +201,7 @@ def delete_task(task_id: int, session: SessionDep):
 
 @app.get("/boom")
 def boom():
-    """Deliberate 500. Used to prove the error-rate panel and the alert fire.
-
-    Kept out of the docs; it is a demo hook, not a feature.
-    """
+    """Deliberate 500, used to demonstrate the error-rate alert."""
     raise RuntimeError("synthetic failure for alerting demo")
 
 

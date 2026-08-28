@@ -1,24 +1,14 @@
 output "state_bucket" {
-  description = "Bucket name to put in each environment's backend block."
+  description = "Pass this to terraform init with -backend-config=bucket=..."
   value       = aws_s3_bucket.state.id
 }
 
-output "backend_config" {
-  description = "Copy-paste backend block for a new environment."
-  value       = <<-EOT
-    terraform {
-      backend "s3" {
-        bucket       = "${aws_s3_bucket.state.id}"
-        key          = "<env>/terraform.tfstate"
-        region       = "${var.region}"
-        encrypt      = true
-        use_lockfile = true
-      }
-    }
-  EOT
+output "github_actions_role_arn" {
+  description = "Store as the AWS_ROLE_ARN secret in GitHub."
+  value       = aws_iam_role.github_actions.arn
 }
 
-output "github_actions_role_arn" {
-  description = "Put this in the AWS_DEPLOY_ROLE_ARN repository variable in GitHub."
-  value       = var.create_github_oidc ? aws_iam_role.github_actions[0].arn : null
+output "ecr_repository_url" {
+  description = "Repository the pipeline pushes images to."
+  value       = aws_ecr_repository.app.repository_url
 }

@@ -1,5 +1,3 @@
-# Local development stack. Same image that CI builds and ECS runs, so a bug
-# reproduced here is the same bug that shows up in staging.
 services:
   db:
     image: postgres:16-alpine
@@ -35,8 +33,6 @@ services:
       db:
         condition: service_healthy
 
-  # postgres_exporter turns Postgres internals into Prometheus metrics.
-  # In AWS this role is played by RDS Enhanced Monitoring + CloudWatch.
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.16.0
     environment:

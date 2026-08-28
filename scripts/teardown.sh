@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-#
-# Destroy an environment, in the order AWS actually allows.
-#
-#   ./scripts/teardown.sh staging
-#
-# `terraform destroy` alone tends to fail on this stack for two reasons, and
-# both are easier to handle here than to work around in the configuration:
-#
-#   1. RDS has deletion_protection on in prod, and the API refuses the delete
-#      before Terraform even gets to it.
-#   2. ECR will not delete a repository that still contains images unless
-#      force_delete is set, which prod deliberately does not set.
-#
-# Written mostly because I was tearing the free-tier stack down repeatedly
-# while testing and got tired of the same two errors.
 
 set -euo pipefail
 

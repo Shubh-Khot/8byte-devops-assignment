@@ -1,9 +1,4 @@
-"""Integration tests: real FastAPI app against a real Postgres.
-
-Marked `integration` so `pytest -m "not integration"` still works on a laptop
-with no database running. CI starts a Postgres service container and runs the
-whole file.
-"""
+"""Integration tests against a real Postgres. Skipped when DB_HOST is unset."""
 
 import os
 
@@ -21,9 +16,6 @@ def client():
     from main import app
 
     import db
-
-    # Start from a clean table so assertions on counts are deterministic when
-    # the same database is reused across runs.
     from models import Base
 
     Base.metadata.drop_all(db.engine)
@@ -75,7 +67,6 @@ def test_metrics_endpoint_exposes_request_counters(client):
 
     assert "http_requests_total" in body
     assert 'path="/tasks"' in body
-    # The route template, not the expanded path - guards the cardinality fix.
     client.get("/tasks/999999")
     body = client.get("/metrics").text
     assert 'path="/tasks/{task_id}"' in body

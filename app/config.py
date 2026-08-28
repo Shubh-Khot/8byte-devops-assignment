@@ -1,9 +1,4 @@
-"""Runtime configuration.
-
-Everything comes from the environment. Nothing has a production-safe default:
-if DB_PASSWORD is missing we want a loud failure at boot, not a service that
-silently connects to something unexpected.
-"""
+"""Runtime configuration, read from the environment."""
 
 import os
 from dataclasses import dataclass
@@ -29,7 +24,7 @@ class Settings:
 
     @property
     def safe_database_url(self) -> str:
-        """Same URL with the password blanked, for logs and error messages."""
+        """Same URL with the password blanked out, for logs."""
         return (
             f"postgresql+psycopg://{self.db_user}:***"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
@@ -44,7 +39,6 @@ def load_settings() -> Settings:
         db_name=os.getenv("DB_NAME", "tasksdb"),
         db_user=os.getenv("DB_USER", "tasks"),
         db_password=os.getenv("DB_PASSWORD", ""),
-        # Fargate tasks are small; a big pool just holds RDS connections hostage.
         db_pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
     )

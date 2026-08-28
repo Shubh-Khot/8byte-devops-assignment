@@ -272,18 +272,14 @@ The options, none of them free:
 | Interface VPC endpoints | ~$29/mo (4 × $7.20) | comparable cost, more moving parts |
 | Tasks in public subnets | $0 | weaker isolation |
 
-**Resolution.** Different answers per environment, both explicit:
+**Resolution.** One shared NAT gateway in both environments, with tasks and the database
+in private subnets. That accepts a single-AZ dependency for outbound traffic in exchange
+for keeping every workload off the public internet, in staging as well as production.
 
-- **Staging** — no NAT, tasks in public subnets with a public IP. They still accept
-  inbound traffic *only* from the ALB security group, and RDS stays in data subnets with
-  no internet route in either direction. This is a real reduction in defence in depth and
-  it is written down as such.
-- **Production** — one shared NAT, tasks private, plus the free S3 gateway endpoint so ECR
-  layer pulls (S3 objects underneath) do not incur NAT data processing.
-
-Both are `enable_nat_gateway` / `single_nat_gateway` / `tasks_in_public_subnets` variables
-rather than hardcoded, so the day traffic justifies a NAT per AZ, that is a variable
-change and not a rewrite.
+Putting staging's tasks in public subnets would save the $32 outright, and it is tempting
+for an environment nobody depends on. I did not do it, because then staging stops being a
+rehearsal for production and the difference is exactly the part that carries the security
+risk.
 
 ---
 
