@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: repo-dashboards
+    orgId: 1
+    type: file
+    disableDeletion: false
+    # Dashboards live in git and are provisioned read-only into Grafana. Edits
+    # made in the UI are for exploring; anything worth keeping goes back into
+    # the JSON, so a rebuilt Grafana is identical to the one it replaced.
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

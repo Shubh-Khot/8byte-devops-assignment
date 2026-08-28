@@ -1,0 +1,58 @@
+# Promtail tails container logs off the Docker socket and ships them to Loki.
+#
+# The equivalent in AWS is the awslogs driver on the ECS task definition
+# writing straight to CloudWatch - no agent to run, which is one of the real
+# advantages of Fargate.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+
+    relabel_configs:
+      # Strip the leading slash Docker puts on container names.
+      - source_labels: [__meta_docker_container_name]
+        regex: "/(.*)"
+        target_label: container
+
+      - source_labels: [__meta_docker_container_log_stream]
+        target_label: stream
+
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+
+    pipeline_stages:
+      # The app emits JSON, so parse it and promote the useful fields to
+      # labels. Only low-cardinality fields become labels: `level` has five
+      # possible values, `request_id` has millions and would blow up the index.
+      - match:
+          selector: '{service="api"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  msg: msg
+                  path: path
+                  route: route
+                  status: status
+                  duration_ms: duration_ms
+                  request_id: request_id
+            - labels:
+                level:
+                route:
+            - timestamp:
+                source: ts
+                format: RFC3339Nano
+                action_on_failure: fudge

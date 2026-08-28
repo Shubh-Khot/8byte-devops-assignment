@@ -1,0 +1,31 @@
+# Datasources are provisioned from this file rather than clicked in the UI, so
+# a fresh `docker compose up` produces a working Grafana with no manual setup.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s # must match prometheus scrape_interval or rate() misbehaves
+      httpMethod: POST
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000
+      # Links a log line's request_id straight through to a trace view. No
+      # tracing backend is wired up here, but the field is extracted so the
+      # correlation exists the day one is added.
+      derivedFields:
+        - name: request_id
+          matcherRegex: '"request_id":\s*"([^"]+)"'
+          datasourceUid: loki
+          url: '/explore?left={"queries":[{"expr":"{service=\"api\"} |= \"$${__value.raw}\""}]}'

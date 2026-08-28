@@ -1,0 +1,56 @@
+# Scrape config for the local stack.
+#
+# In AWS the same metrics come from CloudWatch (ALB, ECS, RDS) and the
+# dashboards there are defined in terraform/modules/observability. This stack
+# exists because CloudWatch cannot show you a p99 computed from a real
+# histogram - it only stores what the ALB reports - and because being able to
+# run the whole observability pipeline on a laptop makes it far easier to
+# iterate on dashboards and alert rules before they cost money.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # The application itself, via the /metrics endpoint the app exposes.
+  - job_name: task-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: task-api
+
+  # Postgres internals: connection counts, transaction rates, table stats.
+  # RDS Enhanced Monitoring plays this role in AWS.
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          service: postgres
+
+  # Host-level CPU, memory, disk, network. On Fargate this is Container
+  # Insights; the metric names differ but the questions they answer are identical.
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: host
+
+  # Per-container resource usage.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

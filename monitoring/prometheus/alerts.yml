@@ -1,0 +1,122 @@
+# Alert rules.
+#
+# These mirror the CloudWatch alarms in terraform/modules/observability so the
+# local stack and AWS agree on what "unhealthy" means. Where they differ, it
+# is because Prometheus can express things CloudWatch cannot - a real
+# histogram_quantile over the app's own latency buckets, for instance.
+
+groups:
+  - name: availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job="task-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "task-api is not responding to scrapes"
+          description: "Prometheus has been unable to scrape {{ $labels.instance }} for over a minute."
+
+      - alert: DatabaseUnreachable
+        # Set by the app's own readiness check, so this is the application's
+        # view of the database rather than the database's view of itself.
+        # It catches network partitions and credential problems that a
+        # database-side check would report as perfectly healthy.
+        expr: app_database_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Application cannot reach Postgres"
+          description: "readyz has been failing for 2 minutes; the ALB will have drained these tasks."
+
+  - name: latency-and-errors
+    rules:
+      - alert: HighErrorRate
+        # A ratio, not a count. 5 errors out of 10 requests is an incident;
+        # 5 out of 500,000 is background noise, and a count-based alert cannot
+        # tell them apart.
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 5% of requests are failing"
+          description: "5xx ratio is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 latency above 1.5s"
+          description: "p99 is {{ $value | humanizeDuration }}."
+
+      - alert: EndpointLatencyRegression
+        # Per-route, so a single slow endpoint is visible instead of being
+        # averaged away by the fast ones.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, path)
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.path }} p95 is above 2s"
+
+  - name: saturation
+    rules:
+      - alert: RequestsPilingUp
+        # In-flight requests climbing while throughput does not means work is
+        # queueing, which shows up here well before it shows up as latency.
+        expr: http_requests_in_flight > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Requests are queueing up ({{ $value }} in flight)"
+
+      - alert: PostgresConnectionsHigh
+        expr: |
+          sum(pg_stat_activity_count) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres connection count is high"
+          description: "{{ $value }} connections. Usually a leaked pool, not real load."
+
+      - alert: HostDiskFillingUp
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            / node_filesystem_size_bytes{mountpoint="/"}
+          ) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 15% disk free on {{ $labels.instance }}"
+
+      - alert: HostMemoryPressure
+        expr: |
+          (
+            1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+          ) > 0.90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory above 90% on {{ $labels.instance }}"
