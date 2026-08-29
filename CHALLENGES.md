@@ -1,314 +1,151 @@
 # Challenges and resolutions
 
-Everything below actually happened while building this. Where a problem produced an
-error message, I have kept the real one.
+Problems hit while building and deploying this stack, with the actual errors
+and what fixed them.
 
----
+## 1. An SCP blocked the whole build on the first AWS account
 
-## 1. Two uvicorn workers raced to create the schema
-
-**Symptom.** First clean `docker compose up`, and the application logged this before
-recovering on a retry:
+**Symptom.** `terraform plan` worked, but every real call failed:
 
 ```
-"level": "WARNING", "msg": "database not ready", "attempt": 1,
-"error": "(psycopg.errors.UniqueViolation) duplicate key value violates unique
-constraint \"pg_class_relname_nsp_index\"
-DETAIL: Key (relname, relnamespace)=(tasks_id_seq, 2200) already exists."
+An error occurred (UnauthorizedOperation) when calling the DescribeVpcs
+operation: ... with an explicit deny in a service control policy:
+arn:aws:organizations::...:policy/.../service_control_policy/p-fpli5i1p
 ```
 
-**Diagnosis.** The container ran uvicorn with `--workers 2`. Both workers execute the
-lifespan startup hook, both call `Base.metadata.create_all()`, both check "do the tables
-exist?" at the same moment, both get "no", and both issue `CREATE TABLE`. One wins; the
-loser hits a unique violation on `pg_class`.
-
-My retry loop masked it — the second attempt found the tables already there and carried
-on — which is exactly why it was worth fixing properly. It only looked harmless because
-of a workaround I had written for a different reason. With N Fargate tasks starting
-simultaneously during a rolling deploy, the same race is much wider.
-
-**Resolution.** A transaction-scoped Postgres advisory lock around the DDL:
-
-```python
-with engine.begin() as conn:
-    conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SCHEMA_LOCK_KEY})
-    Base.metadata.create_all(conn)
-```
-
-Transaction-scoped (`pg_advisory_xact_lock`, not `pg_advisory_lock`) matters: the lock is
-released on commit, and released automatically if the process dies mid-migration rather
-than wedging every future boot. After the fix, the retry counter on a cold start is zero.
-
-**What I would do in production.** Not this. Application containers should not run DDL at
-all — migrations belong in Alembic, run as a one-shot ECS task before the rolling update.
-The advisory lock is the right fix for the shape of this demo, and it is documented as
-such in `db.py`.
-
----
-
-## 2. A false "database unreachable" critical alert against a healthy database
-
-**Symptom.** After wiring up Prometheus, this was firing:
+**Diagnosis.** Two separate blockers. The service control policy denied every
+call in `ap-south-1` while allowing `us-east-1`, so the account was region
+locked. And even in the allowed region, the IAM group granted EC2, RDS and VPC
+but **not** ECS, ECR or Secrets Manager:
 
 ```
-DatabaseUnreachable   firing   Application cannot reach Postgres
+ecs:ListClusters -> no identity-based policy allows the ecs:ListClusters action
 ```
 
-The database was fine. `curl /readyz` returned `{"status":"ready","database":"ok"}`.
+An SCP overrides IAM, so no permission grant could fix the first half.
 
-**Diagnosis.** `app_database_up` is a gauge, and I had only written to it inside the
-`/readyz` handler. A Prometheus gauge defaults to 0. So the sequence was:
+**Resolution.** Moved to an account with no organisation attached. Worth
+knowing that `terraform plan` succeeded throughout: plan touched none of the
+denied APIs, so it gave a false sense that the credentials were sufficient.
 
-1. Container starts, gauge = 0 (default).
-2. Nothing calls `/readyz` — the load generator only hits `/tasks`.
-3. Prometheus scrapes `/metrics`, reads 0, and correctly reports what it was told.
+## 2. GitHub changed the OIDC subject format
 
-The metric was not measuring the database. It was measuring *whether anyone had recently
-asked about the database*.
-
-This would have been invisible in AWS, which is the part that bothered me most: the ALB
-health check polls `/readyz` every 15 seconds, so the gauge would always look fresh. The
-bug would have sat there until the first time something else consumed that metric.
-
-**Resolution.** Moved the check behind one function that both callers share, and added a
-background task that refreshes it on a timer regardless of traffic:
-
-```python
-async def readiness_loop() -> None:
-    while True:
-        await asyncio.to_thread(check_database)   # psycopg is sync; don't stall the loop
-        await asyncio.sleep(READINESS_INTERVAL_SECONDS)
-```
-
-Also seeded a real value during startup, before the first scrape can happen. Verified by
-querying the gauge with zero traffic to the service: `app_database_up 1.0`.
-
-**Lesson, and what I added because of it.** A gauge that is only written on a request path
-is not a health metric. Four regression tests in `app/tests/test_readiness_unit.py` now
-pin the behaviour, including that the gauge recovers *without* an HTTP request.
-
----
-
-## 3. An SCP on the AWS account blocked `terraform plan`
-
-**Symptom.** The first real plan against AWS got most of the way and then:
+**Symptom.** Every pipeline run failed at the first AWS step:
 
 ```
-Error: fetching Availability Zones: operation error EC2: DescribeAvailabilityZones,
-https response error StatusCode: 403, api error UnauthorizedOperation: You are not
-authorized to perform: ec2:DescribeAvailabilityZones with an explicit deny in a
-service control policy
+Could not assume role with OIDC: Not authorized to perform
+sts:AssumeRoleWithWebIdentity
 ```
 
-**Diagnosis.** Not an IAM policy problem — an **explicit deny in an Organizations service
-control policy**, which no amount of granting permissions to the user can override. The
-`data "aws_availability_zones"` lookup is best practice (AZ names are per-account aliases,
-so `ap-south-1a` is not the same physical zone in two different accounts), but it is a
-hard dependency on a permission the stack does not otherwise need.
+The trust policy looked correct and matched every example in the docs.
 
-**Resolution.** Made the lookup optional rather than removing it:
-
-```hcl
-data "aws_availability_zones" "available" {
-  count = length(var.availability_zones) > 0 ? 0 : 1
-  state = "available"
-}
-
-azs = length(var.availability_zones) > 0 ? var.availability_zones : slice(data.aws_availability_zones.available[0].names, 0, 2)
-```
-
-Discovery stays the default because it is the better behaviour; an explicit list is the
-escape hatch. With `-var 'availability_zones=["ap-south-1a","ap-south-1b"]'` the plan
-completed: **70 resources to add, 0 to change, 0 to destroy.**
-
-**Lesson.** A data source is a permission dependency, and in an Organizations account the
-blast radius of one denied read call is the entire plan.
-
----
-
-## 4. Compose resolved every config path against the wrong directory
-
-**Symptom.** With the monitoring compose file at `monitoring/docker-compose.monitoring.yml`,
-Prometheus, Loki and Promtail all crash-looped:
+**Diagnosis.** CloudTrail showed the subject STS actually received:
 
 ```
-error mounting "/host_mnt/Users/.../8byte-devops-assignment/prometheus/prometheus.yml"
-to rootfs at "/etc/prometheus/prometheus.yml": ... not a directory:
-Are you trying to mount a directory onto a file (or vice-versa)?
+repo:OWNER@140479984/REPO@1349921486:ref:refs/heads/main
 ```
 
-**Diagnosis.** Compose resolves relative bind-mount paths against the **project
-directory** — the directory of the *first* `-f` file — not against the file the path is
-written in. So `./prometheus/prometheus.yml`, written inside `monitoring/`, resolved to
-`<repo-root>/prometheus/prometheus.yml`. That did not exist, so Docker created it as an
-empty *directory* and mounted that over the config file.
+GitHub now embeds immutable numeric owner and repository ids in the `sub`
+claim, so a deleted and re-registered name cannot inherit a role. The trust
+policy matched only the old `repo:OWNER/REPO:...` form.
 
-The failure mode is nasty: it silently littered four empty directories into the repo root,
-and the error message talks about mount types rather than the path being wrong.
+**Resolution.** The condition now accepts both forms. A second trap sits next
+to this one: jobs that declare a GitHub Environment send
+`...:environment:prod`, not `...:ref:refs/heads/main`, so a policy pinned to a
+branch rejects exactly the deployment jobs it was meant to allow.
 
-**Resolution.** Moved the file to the repo root as `docker-compose.monitoring.yml` and
-rewrote the paths to `./monitoring/...`, so they mean what they look like they mean. The
-reasoning is a comment at the top of the file, because the next person will otherwise
-"tidy" it back into `monitoring/`.
+## 3. `PowerUserAccess` cannot create IAM roles
 
----
+**Symptom.** The deploy role could create everything except the two IAM roles
+the ECS task definition needs.
 
-## 5. Alertmanager does not expand environment variables
+**Diagnosis.** `PowerUserAccess` grants every service except IAM writes. The
+`app` module creates an execution role and a task role, so apply from CI would
+have failed on `iam:CreateRole`.
 
-**Symptom.**
+**Resolution.** An inline policy on the deploy role allowing role management,
+scoped to `role/<name_prefix>-*` rather than `*`.
 
-```
-level=ERROR msg="Loading configuration file failed" err="unsupported scheme \"\" for URL"
-```
+## 4. Seven CVEs in a transitive dependency
 
-**Diagnosis.** I had written `api_url: "${SLACK_WEBHOOK_URL}"`. Unlike many tools,
-Alertmanager does no environment substitution in its config — it read the literal string
-`${SLACK_WEBHOOK_URL}` and correctly rejected it as a URL with no scheme.
+**Symptom.** `pip-audit` failed CI with seven advisories against
+`starlette 0.41.3`, including an unauthenticated denial of service in
+`FileResponse` range parsing.
 
-**Resolution.** Switched to `api_url_file: /etc/alertmanager/slack_url` and mounted the
-file. This turned out to be the better pattern anyway, and for the same reason the ECS
-task definition uses `secrets` rather than `environment` for the database password: the
-secret is mounted at runtime instead of being baked into a config file that lives in git.
-The committed file holds an obvious placeholder.
+**Diagnosis.** Starlette was pinned transitively by FastAPI 0.115, which caps
+it below 0.42. Bumping Starlette alone was not possible.
 
----
+**Resolution.** A coordinated upgrade to FastAPI 0.141 and Starlette 1.6, then
+re-running the suite to confirm nothing broke.
 
-## 6. `node-exporter` could not mount the host root on macOS
+## 5. A fixable HIGH in the base image
 
-**Symptom.**
+**Symptom.** Trivy failed the build on `CVE-2026-14456` in `openssl`,
+`libssl3t64` and `openssl-provider-legacy`, inherited from `python:3.12-slim`.
 
-```
-Error response from daemon: path / is mounted on / but it is not a shared or slave mount
-```
+**Resolution.** `apt-get upgrade` in the runtime stage takes openssl to
+`3.5.7-1~deb13u2` and the image to zero fixable HIGH or CRITICAL findings. The
+scan gate uses `--ignore-unfixed`, because failing on CVEs with no available
+patch only teaches people to disable the gate.
 
-**Diagnosis.** The documented mount is `/:/host:ro,rslave`. On Docker Desktop for macOS
-containers run inside a Linux VM whose root is not a shared mount, so the daemon refuses
-the bind outright.
+## 6. A container health check that could never pass
 
-**Resolution.** Dropped `rslave`. Plain `:ro` works on both platforms. On macOS the
-resulting metrics describe the VM rather than the Mac, which is an acceptable limitation
-for a local demo — and in AWS these metrics come from Container Insights, not from
-node-exporter at all. Noted in a comment so nobody "fixes" it back to the Linux form.
+**Symptom.** The ECS task definition health check ran
+`curl -f http://localhost:8000/readyz`.
 
----
+**Diagnosis.** `python:3.12-slim` does not ship `curl`. The check would fail
+every time, ECS would kill the container, and the service would crash loop —
+and none of that shows up in `terraform validate` or `terraform plan`.
 
-## 7. Prometheus counters jumped around with multiple workers
+**Resolution.** Removed the container-level check and relied on the ALB target
+group, which already polls `/readyz`. Installing curl or using a Python
+one-liner would also have worked.
 
-**Symptom.** Request counters occasionally went *down* between scrapes.
+## 7. The whole secret injected instead of one field
 
-**Diagnosis.** `prometheus_client` keeps counters in process memory. With
-`uvicorn --workers 2` behind one port, each scrape is answered by whichever worker the
-kernel happens to hand the connection to — so Prometheus was alternating between two
-independent sets of counters.
+**Symptom.** Caught in review rather than at runtime: the task definition used
+`valueFrom = var.db_secret_arn`.
 
-**Resolution.** One worker per container, and scale out with `desired_count` instead. On
-Fargate the unit of scale is the task, so nothing is lost: two tasks with one worker each
-cost the same as one task with two workers, and every task is scraped as its own target
-with its own consistent counters. The alternative — `prometheus_client`'s multiprocess
-mode with a shared directory — adds real complexity for no benefit on this platform.
+**Diagnosis.** RDS's managed secret is a JSON document,
+`{"username": "...", "password": "..."}`. Without a key selector, ECS injects
+the entire document as `DB_PASSWORD` and the application cannot connect.
 
----
+**Resolution.** `"${var.db_secret_arn}:password::"`. The two trailing colons
+are the empty version-stage and version-id fields.
 
-## 8. Terraform kept trying to undo the pipeline's deploys
+## 8. CloudWatch dimensions need the ARN suffix, not the ARN
 
-**Symptom.** After the CD workflow deployed a new image, the next `terraform plan` wanted
-to revert the ECS service to the image tag from the last apply.
+**Symptom.** The `app` module exported `alb_arn` and `target_group_arn`, while
+the monitoring module needed `alb_arn_suffix` and `target_group_arn_suffix`.
 
-**Diagnosis.** Both systems believe they own `task_definition`. CI registers a new task
-definition revision and calls `update-service`; Terraform's state still holds the old
-revision and dutifully plans to put it back. Whichever ran last would win, which means the
-answer to "what is deployed?" depended on run ordering.
+**Diagnosis.** CloudWatch metric dimensions use the suffix form
+(`app/name/hash`). Passing a full ARN is accepted without error — the alarms
+and dashboard widgets simply render empty forever.
 
-**Resolution.** An explicit ownership boundary:
+**Resolution.** Added the two `arn_suffix` outputs.
 
-```hcl
-lifecycle {
-  ignore_changes = [task_definition, desired_count]
-}
-```
+## 9. An action version that never existed
 
-Terraform owns the *shape* of the service — networking, roles, scaling policy, circuit
-breaker. The pipeline owns *which image is running*. `desired_count` is in the list for
-the same reason: autoscaling owns it after creation, and without this every plan would
-try to reset a scaled-out service back to its initial count.
+**Symptom.** `Unable to resolve action aquasecurity/trivy-action@0.28.0`.
 
-The same class of problem, with the same fix, hit `final_snapshot_identifier` — its value
-embeds `formatdate(..., timestamp())`, so it showed a diff on *every* plan until it was
-added to `ignore_changes`.
+**Diagnosis.** That project's release tags are `v`-prefixed. `0.28.0` has
+never existed; the current tag is `v0.36.0`.
 
----
+## 10. Where cost was traded against isolation
 
-## 9. Docker served a stale layer and I debugged the wrong code
+Not a bug, but the decision that took longest. A NAT gateway is about $32 a
+month per availability zone and is the largest line item in the stack. Without
+one, Fargate tasks in private subnets cannot reach ECR to pull their own image,
+so the service cannot start at all.
 
-**Symptom.** After the readiness fix in #2, `docker compose up -d --build api` reported a
-successful build, but the gauge still read 0. I spent a while re-reading correct code.
-
-**Diagnosis.** `grep -c readiness_loop main.py` *inside the running container* returned 0.
-The image did not contain the change at all — buildx had served a cached layer for the
-`COPY app/ .` step. `--no-cache` produced the correct image immediately.
-
-**Resolution.** Nothing to change in the repo, but it changed how I verify things. The
-habit I took from it: when behaviour contradicts the source, first prove which bytes are
-actually running. That is also why `BUILD_SHA` is baked into the image and returned by
-`/healthz`, and why the smoke test asserts on it — a deploy that silently rolls back
-otherwise "passes", because the old version answers health checks perfectly well.
-
----
-
-## 10. Choosing where to give up isolation for cost
-
-**Not a bug — the decision I went back and forth on most.**
-
-A NAT gateway is ~$32/month per AZ before data charges, and it is the single largest line
-item in this stack. Without one, Fargate tasks in private subnets cannot reach ECR to pull
-their own image, so the service cannot start at all.
-
-The options, none of them free:
-
-| | cost | tradeoff |
+| Option | Cost | Trade |
 |---|---|---|
-| NAT per AZ | ~$96/mo (3 AZ) | correct, and absurd at this scale |
-| One shared NAT | ~$32/mo | a single-AZ dependency for all egress |
-| Interface VPC endpoints | ~$29/mo (4 × $7.20) | comparable cost, more moving parts |
+| NAT per AZ | ~$64/mo (2 AZ) | correct, and hard to justify at this size |
+| One shared NAT | ~$32/mo | one AZ becomes a dependency for all egress |
+| Interface VPC endpoints | ~$29/mo | comparable cost, more moving parts |
 | Tasks in public subnets | $0 | weaker isolation |
 
-**Resolution.** One shared NAT gateway in both environments, with tasks and the database
-in private subnets. That accepts a single-AZ dependency for outbound traffic in exchange
-for keeping every workload off the public internet, in staging as well as production.
-
-Putting staging's tasks in public subnets would save the $32 outright, and it is tempting
-for an environment nobody depends on. I did not do it, because then staging stops being a
-rehearsal for production and the difference is exactly the part that carries the security
-risk.
-
----
-
-## 11. Smaller things worth recording
-
-**FastAPI's `Depends()` versus the linter.** `ruff` flags `session: Session = Depends(...)`
-as B008 (function call in an argument default) — correct in general, and FastAPI's
-documented idiom. Rather than suppress the rule, I switched to the `Annotated` form:
-`SessionDep = Annotated[Session, Depends(get_session)]`. Same behaviour, declared once,
-and the linter is right again instead of being told to be quiet.
-
-**Ruff sorted the app's own imports as third-party.** The container runs with `/app` as
-the working directory, so imports are flat (`import db`). Ruff could not tell those from
-PyPI packages and interleaved them with `fastapi` and `sqlalchemy`. Fixed with
-`known-first-party` in `.ruff.toml` rather than by restructuring the app into a package
-purely to satisfy a tool.
-
-**Dual-axis panels.** My first pass at the CloudWatch dashboards had "RDS throughput and
-latency" as one widget with IOPS on the left axis and seconds on the right. Two unrelated
-scales in one chart let you slide them until the lines appear to correlate. Split into
-separate panels.
-
-**RDS rejects some master usernames and some password characters.** `admin`, `postgres`
-and `rdsadmin` are reserved, and a handful of special characters are refused in the master
-password — both produce an `InvalidParameterValue` at create time that is annoying to
-trace back to its cause. Encoded as a `validation` block on the variable and an
-`override_special` on `random_password`, so it fails at plan time with a clear message
-instead of failing at apply.
-
-**`backup_retention_days = 0` silently disables PITR.** Not just "no scheduled snapshots" —
-point-in-time recovery goes away too. There is now a validation rule rejecting 0, because
-it is an easy mistake and an expensive one to discover.
+One shared NAT in both environments, with tasks and the database private.
+Putting staging's tasks in public subnets would have saved the $32 outright,
+but then staging stops being a rehearsal for production, and the difference
+would be exactly the part carrying the security risk.

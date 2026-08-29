@@ -15,7 +15,7 @@ permissions:
 
 env:
   AWS_REGION: ap-south-1
-  ECR_REPOSITORY: taskapi
+  ECR_REPOSITORY: hero
 
 jobs:
   build:
@@ -58,12 +58,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update service
-        run: scripts/deploy.sh taskapi-staging "${{ needs.build.outputs.image }}"
+        run: scripts/deploy.sh hero-staging-cluster hero-staging-service "${{ needs.build.outputs.image }}"
 
       - name: Smoke test
         run: |
           URL=$(aws elbv2 describe-load-balancers \
-            --names taskapi-staging-alb \
+            --names hero-staging-alb \
             --query 'LoadBalancers[0].DNSName' --output text)
           scripts/smoke-test.sh "http://$URL"
 
@@ -81,11 +81,11 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update service
-        run: scripts/deploy.sh taskapi-prod "${{ needs.build.outputs.image }}"
+        run: scripts/deploy.sh hero-prod-cluster hero-prod-service "${{ needs.build.outputs.image }}"
 
       - name: Smoke test
         run: |
           URL=$(aws elbv2 describe-load-balancers \
-            --names taskapi-prod-alb \
+            --names hero-prod-alb \
             --query 'LoadBalancers[0].DNSName' --output text)
           scripts/smoke-test.sh "http://$URL"

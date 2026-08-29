@@ -36,22 +36,22 @@ else
   echo "  skipped: no expected build passed"
 fi
 
-echo "[3/5] create a task"
-created=$(curl -fsS --max-time 10 -X POST "${BASE_URL}/tasks" \
+echo "[3/5] create a hero"
+created=$(curl -fsS --max-time 10 -X POST "${BASE_URL}/heroes/" \
   -H 'Content-Type: application/json' \
-  -d "{\"title\":\"smoke-test $(date -u +%FT%TZ)\"}")
-task_id=$(echo "$created" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-[ -n "$task_id" ] || fail "could not parse task id from: ${created}"
-ok "created task ${task_id}"
+  -d "{\"name\":\"smoke-test $(date -u +%FT%TZ)\",\"secret_name\":\"smoke\"}")
+hero_id=$(echo "$created" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+[ -n "$hero_id" ] || fail "could not parse hero id from: ${created}"
+ok "created hero ${hero_id}"
 
 echo "[4/5] read it back and clean up"
-curl -fsS --max-time 10 "${BASE_URL}/tasks/${task_id}" >/dev/null || fail "created task is not readable"
-curl -fsS --max-time 10 -X DELETE "${BASE_URL}/tasks/${task_id}" >/dev/null || fail "could not delete the test task"
+curl -fsS --max-time 10 "${BASE_URL}/heroes/${hero_id}" >/dev/null || fail "created hero is not readable"
+curl -fsS --max-time 10 -X DELETE "${BASE_URL}/heroes/${hero_id}" >/dev/null || fail "could not delete the test hero"
 ok "round-trip complete, test data removed"
 
-echo "[5/5] metrics endpoint"
-curl -fsS --max-time 10 "${BASE_URL}/metrics" | grep -q "http_requests_total" \
-  || fail "/metrics is not exposing http_requests_total"
-ok "metrics exposed"
+echo "[5/5] api documentation"
+curl -fsS --max-time 10 -o /dev/null "${BASE_URL}/openapi.json" \
+  || fail "/openapi.json is not being served"
+ok "openapi served"
 
 echo "Smoke test passed."

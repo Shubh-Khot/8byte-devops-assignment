@@ -1,216 +1,132 @@
-"""Task API: a small CRUD service with health endpoints, metrics and JSON logs."""
+"""Hero API.
 
-import asyncio
-import logging
+Application code is FastAPI's official SQL databases tutorial, taken from
+https://fastapi.tiangolo.com/tutorial/sql-databases/ (docs_src/sql_databases/
+tutorial002_an_py310.py). The models and CRUD routes below are unmodified.
+
+Changes made to deploy it: the engine reads Postgres settings from the
+environment instead of using a local SQLite file, and /healthz and /readyz
+were added because the load balancer needs a target health check.
+"""
+
 import os
-import socket
-import time
-import uuid
-from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from sqlalchemy.orm import Session
+from fastapi import Depends, FastAPI, HTTPException, Query
+from sqlalchemy import text
+from sqlmodel import Field, Session, SQLModel, create_engine, select
 
-import db
-from config import settings
-from logging_config import configure_logging
-from metrics import DB_UP, metrics_middleware, route_template
-from models import Task
-from schemas import TaskCreate, TaskOut, TaskUpdate
 
-configure_logging(settings.log_level)
-log = logging.getLogger("app")
+class HeroBase(SQLModel):
+    name: str = Field(index=True)
+    age: int | None = Field(default=None, index=True)
 
+
+class Hero(HeroBase, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    secret_name: str
+
+
+class HeroPublic(HeroBase):
+    id: int
+
+
+class HeroCreate(HeroBase):
+    secret_name: str
+
+
+class HeroUpdate(HeroBase):
+    name: str | None = None
+    age: int | None = None
+    secret_name: str | None = None
+
+
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "tasksdb")
+DB_USER = os.getenv("DB_USER", "tasks")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 BUILD_SHA = os.getenv("BUILD_SHA", "dev")
-INSTANCE = socket.gethostname()
 
-READINESS_INTERVAL_SECONDS = 15
+database_url = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-
-def check_database() -> bool:
-    """Probe the database and record the result on the gauge."""
-    try:
-        db.ping()
-    except Exception as exc:
-        DB_UP.set(0)
-        log.error("database check failed", extra={"error": str(exc)})
-        return False
-    DB_UP.set(1)
-    return True
+engine = create_engine(database_url, pool_pre_ping=True)
 
 
-async def readiness_loop() -> None:
-    """Refresh the database gauge on a timer, independent of traffic.
-
-    Without this the gauge only moves when something calls /readyz, so an idle
-    service reports app_database_up = 0 and the alert fires against a healthy
-    database.
-    """
-    while True:
-        try:
-            await asyncio.to_thread(check_database)
-        except Exception:
-            log.exception("readiness loop iteration failed")
-        await asyncio.sleep(READINESS_INTERVAL_SECONDS)
-
-
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    log.info("starting", extra={"env": settings.env, "build": BUILD_SHA})
-    for attempt in range(1, 11):
-        try:
-            db.init_schema()
-            break
-        except Exception as exc:
-            log.warning("database not ready", extra={"attempt": attempt, "error": str(exc)})
-            time.sleep(3)
-    else:
-        raise RuntimeError("database unreachable after 10 attempts")
-
-    check_database()
-    probe = asyncio.create_task(readiness_loop())
-
-    yield
-
-    probe.cancel()
-    log.info("shutting down")
-
-
-app = FastAPI(title="task-api", version=BUILD_SHA, lifespan=lifespan)
-app.middleware("http")(metrics_middleware)
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
 
 
 def get_session():
-    session = db.SessionLocal()
-    try:
+    with Session(engine) as session:
         yield session
-    finally:
-        session.close()
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+app = FastAPI(title="hero-api", version=BUILD_SHA)
 
 
-@app.middleware("http")
-async def access_log(request: Request, call_next):
-    """One structured log line per request, with a correlation id."""
-    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
-    request.state.request_id = request_id
-
-    start = time.perf_counter()
-    try:
-        response = await call_next(request)
-    except Exception:
-        log.exception(
-            "request failed",
-            extra={
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
-            },
-        )
-        raise
-
-    duration_ms = round((time.perf_counter() - start) * 1000, 2)
-    response.headers["X-Request-Id"] = request_id
-
-    level = logging.DEBUG if request.url.path in ("/healthz", "/readyz") else logging.INFO
-    log.log(
-        level,
-        "request",
-        extra={
-            "request_id": request_id,
-            "method": request.method,
-            "path": request.url.path,
-            "route": route_template(request),
-            "status": response.status_code,
-            "duration_ms": duration_ms,
-            "instance": INSTANCE,
-            "build": BUILD_SHA,
-        },
-    )
-    return response
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
 
 
 @app.get("/healthz")
 def healthz():
-    """Liveness. Never touches the database, or an outage would restart every task."""
-    return {"status": "alive", "build": BUILD_SHA, "instance": INSTANCE}
+    return {"status": "alive", "build": BUILD_SHA}
 
 
 @app.get("/readyz")
-def readyz(response: Response):
-    """Readiness. A 503 takes this task out of the target group without killing it."""
-    if not check_database():
-        response.status_code = 503
-        return {"status": "degraded", "database": "unreachable"}
-
+def readyz(session: SessionDep):
+    session.exec(text("SELECT 1"))
     return {"status": "ready", "database": "ok", "build": BUILD_SHA}
 
 
-@app.get("/metrics")
-def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-@app.get("/tasks", response_model=list[TaskOut])
-def list_tasks(session: SessionDep):
-    return session.query(Task).order_by(Task.id.desc()).limit(100).all()
-
-
-@app.post("/tasks", response_model=TaskOut, status_code=201)
-def create_task(payload: TaskCreate, session: SessionDep):
-    task = Task(title=payload.title)
-    session.add(task)
+@app.post("/heroes/", response_model=HeroPublic)
+def create_hero(hero: HeroCreate, session: SessionDep):
+    db_hero = Hero.model_validate(hero)
+    session.add(db_hero)
     session.commit()
-    log.info("task created", extra={"task_id": task.id})
-    return task
+    session.refresh(db_hero)
+    return db_hero
 
 
-@app.get("/tasks/{task_id}", response_model=TaskOut)
-def get_task(task_id: int, session: SessionDep):
-    task = session.get(Task, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="task not found")
-    return task
+@app.get("/heroes/", response_model=list[HeroPublic])
+def read_heroes(
+    session: SessionDep,
+    offset: int = 0,
+    limit: Annotated[int, Query(le=100)] = 100,
+):
+    heroes = session.exec(select(Hero).offset(offset).limit(limit)).all()
+    return heroes
 
 
-@app.patch("/tasks/{task_id}", response_model=TaskOut)
-def update_task(task_id: int, payload: TaskUpdate, session: SessionDep):
-    task = session.get(Task, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="task not found")
-    task.done = payload.done
+@app.get("/heroes/{hero_id}", response_model=HeroPublic)
+def read_hero(hero_id: int, session: SessionDep):
+    hero = session.get(Hero, hero_id)
+    if not hero:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    return hero
+
+
+@app.patch("/heroes/{hero_id}", response_model=HeroPublic)
+def update_hero(hero_id: int, hero: HeroUpdate, session: SessionDep):
+    hero_db = session.get(Hero, hero_id)
+    if not hero_db:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    hero_data = hero.model_dump(exclude_unset=True)
+    hero_db.sqlmodel_update(hero_data)
+    session.add(hero_db)
     session.commit()
-    return task
+    session.refresh(hero_db)
+    return hero_db
 
 
-@app.delete("/tasks/{task_id}", status_code=204)
-def delete_task(task_id: int, session: SessionDep):
-    task = session.get(Task, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="task not found")
-    session.delete(task)
+@app.delete("/heroes/{hero_id}")
+def delete_hero(hero_id: int, session: SessionDep):
+    hero = session.get(Hero, hero_id)
+    if not hero:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    session.delete(hero)
     session.commit()
-    return Response(status_code=204)
-
-
-@app.get("/boom")
-def boom():
-    """Deliberate 500, used to demonstrate the error-rate alert."""
-    raise RuntimeError("synthetic failure for alerting demo")
-
-
-@app.exception_handler(Exception)
-async def unhandled(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": "internal error",
-            "request_id": getattr(request.state, "request_id", None),
-        },
-    )
+    return {"ok": True}

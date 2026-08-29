@@ -1,6 +1,5 @@
 
 COMPOSE      := docker compose
-COMPOSE_ALL  := docker compose -f docker-compose.yml -f docker-compose.monitoring.yml
 PY_IMAGE     := python:3.12-slim
 TF_ENV       ?= staging
 
@@ -18,32 +17,15 @@ up: ## Start the app and Postgres
 
 .PHONY: down
 down: ## Stop everything, keep the data
-	$(COMPOSE_ALL) down
+	$(COMPOSE) down
 
 .PHONY: clean
 clean: ## Stop everything and delete volumes
-	$(COMPOSE_ALL) down -v
+	$(COMPOSE) down -v
 
 .PHONY: logs
 logs: ## Tail application logs
 	$(COMPOSE) logs -f api
-
-.PHONY: monitoring
-monitoring: ## Start the app plus Prometheus, Loki, Grafana, exporters
-	$(COMPOSE_ALL) up -d --build
-	@echo ""
-	@echo "  Grafana        http://localhost:3000   (admin/admin)"
-	@echo "  Prometheus     http://localhost:9090"
-	@echo "  Alertmanager   http://localhost:9093"
-	@echo "  API            http://localhost:8000/docs"
-
-.PHONY: load
-load: ## Generate 60s of demo traffic
-	./scripts/generate-load.sh 60
-
-.PHONY: load-errors
-load-errors: ## Generate traffic including 5xx, to trip the error-rate alert
-	./scripts/generate-load.sh 120 errors
 
 .PHONY: test
 test: ## Run the full test suite against the compose Postgres

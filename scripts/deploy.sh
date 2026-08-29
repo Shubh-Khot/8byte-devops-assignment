@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-SERVICE="${1:?usage: deploy.sh <cluster-and-service-name> <image>}"
-IMAGE="${2:?usage: deploy.sh <cluster-and-service-name> <image>}"
-CLUSTER="$SERVICE"
+CLUSTER="${1:?usage: deploy.sh <cluster> <service> <image>}"
+SERVICE="${2:?usage: deploy.sh <cluster> <service> <image>}"
+IMAGE="${3:?usage: deploy.sh <cluster> <service> <image>}"
 
 echo "Deploying $IMAGE to $SERVICE"
 

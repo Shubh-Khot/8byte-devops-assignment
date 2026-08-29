@@ -96,11 +96,11 @@ jobs:
           terraform_version: 1.10.5
 
       - name: Format check
-        run: terraform fmt -check -recursive terraform/
+        run: terraform fmt -check -recursive infra/
 
       - name: Validate
         run: |
-          for dir in terraform/bootstrap terraform/envs/* terraform/modules/*; do
+          for dir in infra/bootstrap infra/envs/* infra/modules/*; do
             terraform -chdir="$dir" init -backend=false -input=false > /dev/null
             terraform -chdir="$dir" validate
           done

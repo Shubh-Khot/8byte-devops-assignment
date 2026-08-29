@@ -33,15 +33,6 @@ services:
       db:
         condition: service_healthy
 
-  postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.16.0
-    environment:
-      DATA_SOURCE_NAME: "postgresql://tasks:localdev@db:5432/tasksdb?sslmode=disable"
-    ports:
-      - "9187:9187"
-    depends_on:
-      db:
-        condition: service_healthy
 
 volumes:
   pgdata:
