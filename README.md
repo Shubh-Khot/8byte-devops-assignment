@@ -1,4 +1,4 @@
-# Hero API on ECS Fargate
+# Task API on ECS Fargate
 
 A small FastAPI service deployed to AWS ECS Fargate, with Terraform for the
 infrastructure, GitHub Actions for build and deployment, and CloudWatch for
@@ -53,7 +53,7 @@ terraform init
 terraform apply \
   -var aws_region=ap-south-1 \
   -var state_bucket_name=<globally-unique-bucket> \
-  -var ecr_repository_name=hero \
+  -var ecr_repository_name=taskapi \
   -var github_repository=<owner>/<repo> \
   -var github_owner_id=<gh api user --jq .id> \
   -var github_repository_id=<gh api repos/OWNER/REPO --jq .id>

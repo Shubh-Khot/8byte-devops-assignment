@@ -98,9 +98,9 @@ resource "aws_iam_role" "task" {
   })
 }
 
-resource "aws_iam_role_policy" "task" {
-  name = "${var.name_prefix}-ecs-task-policy"
-  role = aws_iam_role.task.id
+resource "aws_iam_role_policy" "execution_secrets" {
+  name = "${var.name_prefix}-ecs-execution-secrets"
+  role = aws_iam_role.execution.id
 
   policy = jsonencode({
     Version = "2012-10-17"

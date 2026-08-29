@@ -70,6 +70,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
     LoadBalancer = var.alb_arn_suffix
   }
 
+  treat_missing_data = "notBreaching"
+
   alarm_actions = [aws_sns_topic.alerts.arn]
 }
 
@@ -89,6 +91,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy" {
     LoadBalancer = var.alb_arn_suffix
     TargetGroup  = var.target_group_arn_suffix
   }
+
+  treat_missing_data = "notBreaching"
 
   alarm_actions = [aws_sns_topic.alerts.arn]
 }

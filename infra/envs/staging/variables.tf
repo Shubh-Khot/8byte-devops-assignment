@@ -1,7 +1,7 @@
 variable "project" {
   description = "Project name, used as the prefix for every resource"
   type        = string
-  default     = "hero"
+  default     = "taskapi"
 }
 
 variable "environment" {
@@ -29,7 +29,7 @@ variable "vpc_cidr" {
 variable "ecr_repository_name" {
   description = "ECR repository holding the application image"
   type        = string
-  default     = "hero"
+  default     = "taskapi"
 }
 
 variable "image_tag" {

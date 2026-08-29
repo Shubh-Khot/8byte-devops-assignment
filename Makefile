@@ -49,7 +49,7 @@ lint: ## Lint and format-check the application
 fmt: ## Auto-fix lint and formatting
 	docker run --rm -v "$$PWD:/w" -w /w $(PY_IMAGE) \
 		sh -c "pip install --quiet ruff==0.8.4 && ruff check --fix app/ && ruff format app/"
-	terraform fmt -recursive terraform/
+	terraform fmt -recursive infra/
 
 .PHONY: audit
 audit: ## Scan dependencies and the image for known vulnerabilities
@@ -65,8 +65,8 @@ smoke: ## Run the smoke test against the local stack
 
 .PHONY: tf-validate
 tf-validate: ## fmt-check and validate every Terraform root and module
-	terraform fmt -check -recursive terraform/
-	@for d in terraform/bootstrap terraform/envs/* terraform/modules/*; do \
+	terraform fmt -check -recursive infra/
+	@for d in infra/bootstrap infra/envs/* infra/modules/*; do \
 		echo "==> $$d"; \
 		terraform -chdir=$$d init -backend=false -input=false >/dev/null; \
 		terraform -chdir=$$d validate || exit 1; \
@@ -74,11 +74,11 @@ tf-validate: ## fmt-check and validate every Terraform root and module
 
 .PHONY: tf-plan
 tf-plan: ## Plan an environment: make tf-plan TF_ENV=prod
-	terraform -chdir=terraform/envs/$(TF_ENV) plan
+	terraform -chdir=infra/envs/$(TF_ENV) plan
 
 .PHONY: tf-apply
 tf-apply: ## Apply an environment: make tf-apply TF_ENV=staging
-	terraform -chdir=terraform/envs/$(TF_ENV) apply
+	terraform -chdir=infra/envs/$(TF_ENV) apply
 
 .PHONY: tf-destroy
 tf-destroy: ## Tear an environment down: make tf-destroy TF_ENV=staging

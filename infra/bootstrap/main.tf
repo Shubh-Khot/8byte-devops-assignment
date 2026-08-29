@@ -1,3 +1,14 @@
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy = "terraform"
+      Purpose   = "bootstrap"
+    }
+  }
+}
+
 locals {
   owner = split("/", var.github_repository)[0]
   repo  = split("/", var.github_repository)[1]
