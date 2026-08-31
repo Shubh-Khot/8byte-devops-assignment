@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ENV="${1:?usage: teardown.sh <staging|prod>}"
-DIR="terraform/envs/${ENV}"
+DIR="infra/envs/${ENV}"
 REGION="${AWS_REGION:-ap-south-1}"
 
 [ -d "$DIR" ] || { echo "No such environment: $ENV" >&2; exit 1; }
@@ -30,17 +30,6 @@ else
   echo "    no instance found, skipping"
 fi
 
-echo "==> Emptying the ECR repository"
-IMAGES=$(aws ecr list-images --repository-name task-api --region "$REGION" \
-  --query 'imageIds[*]' --output json 2>/dev/null || echo '[]')
-if [ "$IMAGES" != "[]" ]; then
-  aws ecr batch-delete-image --repository-name task-api \
-    --image-ids "$IMAGES" --region "$REGION" >/dev/null
-  echo "    deleted $(echo "$IMAGES" | grep -c imageDigest || echo 0) image(s)"
-else
-  echo "    already empty"
-fi
-
 echo "==> Disabling ALB deletion protection"
 ALB_ARN=$(aws elbv2 describe-load-balancers --names "${PREFIX}-alb" \
   --region "$REGION" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
@@ -58,3 +47,4 @@ echo "Done. Worth checking by hand, because these outlive the stack:"
 echo "  - the final RDS snapshot (prod keeps one; it is not free)"
 echo "  - CloudWatch log groups, if retention had not expired them yet"
 echo "  - the Terraform state bucket, which is intentionally never destroyed"
+echo "  - the shared ECR repository, which belongs to bootstrap, not to an environment"

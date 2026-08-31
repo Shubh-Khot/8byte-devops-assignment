@@ -79,3 +79,9 @@ variable "db_username" {
 variable "db_secret_arn" {
   type = string
 }
+
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention for the container log group"
+  type        = number
+  default     = 14
+}

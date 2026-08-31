@@ -35,11 +35,6 @@ test: ## Run the full test suite against the compose Postgres
 		-e DB_HOST=db -e DB_USER=tasks -e DB_PASSWORD=localdev -e DB_NAME=tasksdb \
 		$(PY_IMAGE) sh -c "pip install --quiet -r requirements-dev.txt && python -m pytest tests -v"
 
-.PHONY: test-unit
-test-unit: ## Run only the tests that need no database
-	docker run --rm -v "$$PWD/app:/app" -w /app $(PY_IMAGE) \
-		sh -c "pip install --quiet -r requirements-dev.txt && python -m pytest tests -m 'not integration' -v"
-
 .PHONY: lint
 lint: ## Lint and format-check the application
 	docker run --rm -v "$$PWD:/w" -w /w $(PY_IMAGE) \

@@ -21,13 +21,12 @@ override.tf
 override.tf.json
 
 !.terraform.lock.hcl
-terraform/modules/*/.terraform.lock.hcl
+infra/modules/*/.terraform.lock.hcl
 
 .env
 .env.local
 *.pem
 *.key
-monitoring/alertmanager/slack_url.local
 
 .DS_Store
 .idea/

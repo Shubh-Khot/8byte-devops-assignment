@@ -57,6 +57,8 @@ module "app" {
   memory            = var.memory
   desired_count     = var.desired_count
 
+  log_retention_days = var.log_retention_days
+
   db_endpoint   = module.database.db_endpoint
   db_port       = module.database.db_port
   db_name       = module.database.db_name

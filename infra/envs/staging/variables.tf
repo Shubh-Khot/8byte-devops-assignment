@@ -115,3 +115,9 @@ variable "alert_emails" {
   type        = list(string)
   default     = []
 }
+
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention for the container log group"
+  type        = number
+  default     = 14
+}

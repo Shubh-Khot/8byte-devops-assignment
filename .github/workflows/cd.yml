@@ -65,7 +65,7 @@ jobs:
           URL=$(aws elbv2 describe-load-balancers \
             --names taskapi-staging-alb \
             --query 'LoadBalancers[0].DNSName' --output text)
-          scripts/smoke-test.sh "http://$URL"
+          scripts/smoke-test.sh "http://$URL" "${{ github.sha }}"
 
   production:
     name: Deploy to production
@@ -88,4 +88,4 @@ jobs:
           URL=$(aws elbv2 describe-load-balancers \
             --names taskapi-prod-alb \
             --query 'LoadBalancers[0].DNSName' --output text)
-          scripts/smoke-test.sh "http://$URL"
+          scripts/smoke-test.sh "http://$URL" "${{ github.sha }}"

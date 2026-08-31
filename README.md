@@ -11,7 +11,6 @@ metrics, logs and alarms across two environments.
   routes are unmodified. Only the database connection (Postgres from the
   environment instead of a local SQLite file) and the `/healthz` and `/readyz`
   endpoints were added, because the load balancer needs a health check.
-- The **infrastructure code** was written with AI assistance.
 
 ## Layout
 
@@ -128,10 +127,20 @@ by the application rather than by migrations.
 ## Monitoring
 
 Five CloudWatch alarms per environment — ECS CPU and memory, ALB 5xx, ALB
-unhealthy targets, and RDS CPU — all notifying an SNS topic. Two dashboards:
-one for the application (traffic, errors, latency, healthy hosts) and one for
-the database and platform. Container logs go to CloudWatch Logs with retention
-set per environment.
+unhealthy targets, and RDS CPU — all notifying an SNS topic. The two ALB alarms
+treat missing data as not breaching, so an idle service does not page anyone.
+Subscribing an address to the topic is left to `alert_emails` in
+`terraform.tfvars`.
+
+Two dashboards per environment: `<prefix>-application` shows ECS CPU and memory
+alongside ALB request count, and `<prefix>-database` shows RDS CPU alongside ALB
+5xx. Both use metric dimensions built from the ALB and target group **ARN
+suffixes** and the RDS **instance identifier**; passing a full ARN or the DBI
+resource id is accepted without error and renders an empty widget forever.
+
+Container logs go to CloudWatch Logs through the `awslogs` driver, one stream
+per task, with retention set per environment — 7 days in staging, 30 in
+production.
 
 ## Cost
 
